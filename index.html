@@ -43,7 +43,9 @@
 </style>
 </head>
 <body>
-<h1>📈 Day Trading PNL Tracker</h1>
+<h1 style="display:flex;justify-content:space-between;align-items:center">📈 Day Trading PNL Tracker
+  <button onclick="document.getElementById('keyPanel').classList.toggle('hidden')" title="Show/hide API keys" style="font-size:13px">⚙ Keys</button>
+</h1>
 
 <div class="panel" id="keyPanel">
   <h2>API Key (Gemini or Anthropic)</h2>
@@ -106,12 +108,20 @@
 'use strict';
 const LS_KEY = 'pnl_api_key', LS_TRADES = 'pnl_trades', LS_GH = 'pnl_gh_token';
 const GH_REPO = 'aarshdesai/pnl-data', GH_FILE = 'trades.json';
+
+// one-time key import from URL hash (#gk=...&gh=...) — hash never reaches the server or repo
+const hashParams = new URLSearchParams(location.hash.slice(1));
+if (hashParams.get('gk')) localStorage.setItem(LS_KEY, hashParams.get('gk'));
+if (hashParams.get('gh')) localStorage.setItem(LS_GH, hashParams.get('gh'));
+if (location.hash) history.replaceState(null, '', location.pathname);
 let trades = JSON.parse(localStorage.getItem(LS_TRADES) || '[]'); // {date, symbol, side, qty, price, mult}
 let pending = [];
 
 // ---------- API key ----------
 const keyInput = document.getElementById('apiKey');
 keyInput.value = localStorage.getItem(LS_KEY) || '';
+// both keys present → tuck the panel away (⚙ Keys button brings it back)
+if (localStorage.getItem(LS_KEY) && localStorage.getItem(LS_GH)) document.getElementById('keyPanel').classList.add('hidden');
 function saveKey() {
   localStorage.setItem(LS_KEY, keyInput.value.trim());
   setStatus('API key saved.');
