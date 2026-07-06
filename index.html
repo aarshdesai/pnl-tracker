@@ -142,7 +142,7 @@ window.addEventListener('paste', e => {
 
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
 
-const PROMPT = 'This is a screenshot of filled/working orders from a trading platform. Extract every FILLED execution (filled qty > 0) as JSON. Ignore rows with 0 filled. Treat parent+child bracket rows as separate fills. Return ONLY a JSON array, no prose: [{"symbol": "...", "side": "buy"|"sell", "qty": <filled qty>, "price": <fill or limit price, null if not shown>, "mult": <contract multiplier: 100 for options, 1 for stock>}]';
+const PROMPT = 'This is a screenshot of filled/working orders from a trading platform. Extract every FILLED execution (Filled Qty > 0) as JSON. Skip rows where Filled Qty is 0. Treat parent+child bracket rows as separate fills. For price, prefer the "Average" (average fill) price column; fall back to limit price; null if neither shown. Return ONLY a JSON array, no prose: [{"symbol": "...", "side": "buy"|"sell", "qty": <filled qty>, "price": <price>, "mult": <contract multiplier: 100 for options, 1 for stock>}]';
 
 async function extract(file) {
   const key = localStorage.getItem(LS_KEY);
@@ -228,12 +228,13 @@ function computePnl(list) {
   const groups = {};
   for (const t of list) {
     const k = t.date + '|' + t.symbol;
-    const g = groups[k] ||= { date: t.date, symbol: t.symbol, buyQty: 0, sellQty: 0, pnl: 0 };
+    const g = groups[k] ||= { date: t.date, symbol: t.symbol, buyQty: 0, sellQty: 0, pnl: 0, cost: 0 };
     const cash = t.qty * t.price * (t.mult || 1);
     if (t.side === 'sell') { g.pnl += cash; g.sellQty += t.qty; }
-    else { g.pnl -= cash; g.buyQty += t.qty; }
+    else { g.pnl -= cash; g.buyQty += t.qty; g.cost += cash; }
   }
-  return Object.values(groups).map(g => ({ ...g, open: g.buyQty !== g.sellQty }));
+  // pct = realized pnl vs total buy cost
+  return Object.values(groups).map(g => ({ ...g, open: g.buyQty !== g.sellQty, pct: g.cost > 0 ? 100 * g.pnl / g.cost : null }));
 }
 
 // ---------- render ----------
@@ -265,13 +266,14 @@ function render() {
   document.getElementById('logCount').textContent = `(${trades.length} fills)`;
   const rows = groups.sort((a, b) => b.date.localeCompare(a.date) || a.symbol.localeCompare(b.symbol));
   document.getElementById('log').innerHTML =
-    '<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th></th></tr>' +
+    '<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th class="num">% Gain</th><th></th></tr>' +
     rows.map(g => `<tr>
       <td>${g.date}</td><td>${g.symbol}${g.open ? ' <small>(open)</small>' : ''}</td>
       <td class="num buy">${g.buyQty}</td><td class="num sell">${g.sellQty}</td>
       <td class="num ${cls(g.pnl)}">${money(g.pnl)}</td>
+      <td class="num ${g.pct == null ? '' : cls(g.pct)}">${g.pct == null ? '—' : g.pct.toFixed(1) + '%'}</td>
       <td><button class="danger" title="Delete all fills for this trade" onclick="deleteGroup('${g.date}','${g.symbol.replace(/'/g, "\\'")}')">✕</button></td>
-    </tr>`).join('') || '<tr><td colspan="6" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
 }
 
 function deleteGroup(date, symbol) {
@@ -383,7 +385,7 @@ document.getElementById('importFile').onchange = async e => {
     { date: 'd', symbol: 'X', side: 'buy', qty: 2, price: 0.40, mult: 100 },
     { date: 'd', symbol: 'X', side: 'sell', qty: 2, price: 0.80, mult: 100 },
   ])[0];
-  console.assert(Math.abs(g.pnl - 80) < 1e-9 && !g.open, 'PnL self-check FAILED', g);
+  console.assert(Math.abs(g.pnl - 80) < 1e-9 && !g.open && Math.abs(g.pct - 100) < 1e-9, 'PnL self-check FAILED', g);
 })();
 
 render();
