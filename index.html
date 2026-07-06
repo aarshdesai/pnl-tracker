@@ -52,6 +52,13 @@
     <button onclick="saveKey()">Save</button>
   </div>
   <small>Stored only in this browser (localStorage). Used to read trades from screenshots. Provider auto-detected from key format — Gemini keys from aistudio.google.com, Anthropic from console.anthropic.com.</small>
+  <h2 style="margin-top:14px">GitHub Sync</h2>
+  <div id="keyRow">
+    <input type="password" id="ghToken" placeholder="github_pat_... (fine-grained token, contents read/write on pnl-data)">
+    <button onclick="saveGhToken()">Save</button>
+    <span id="syncStatus"><small></small></span>
+  </div>
+  <small>Trades auto-save to private repo <b>aarshdesai/pnl-data</b> — survives any browser/machine. Create token at github.com/settings/personal-access-tokens: repo access = only pnl-data, permission = Contents read &amp; write.</small>
 </div>
 
 <div class="stats" id="stats"></div>
@@ -97,7 +104,8 @@
 
 <script>
 'use strict';
-const LS_KEY = 'pnl_api_key', LS_TRADES = 'pnl_trades';
+const LS_KEY = 'pnl_api_key', LS_TRADES = 'pnl_trades', LS_GH = 'pnl_gh_token';
+const GH_REPO = 'aarshdesai/pnl-data', GH_FILE = 'trades.json';
 let trades = JSON.parse(localStorage.getItem(LS_TRADES) || '[]'); // {date, symbol, side, qty, price, mult}
 let pending = [];
 
@@ -260,7 +268,60 @@ function deleteGroup(date, symbol) {
   trades = trades.filter(t => !(t.date === date && t.symbol === symbol));
   persist();
 }
-function persist() { localStorage.setItem(LS_TRADES, JSON.stringify(trades)); render(); }
+function persist() { localStorage.setItem(LS_TRADES, JSON.stringify(trades)); render(); ghSave(); }
+
+// ---------- github sync ----------
+let ghSha = null;
+const ghUrl = `https://api.github.com/repos/${GH_REPO}/contents/${GH_FILE}`;
+const ghHeaders = () => ({ authorization: 'Bearer ' + localStorage.getItem(LS_GH), accept: 'application/vnd.github+json' });
+const ghTokenInput = document.getElementById('ghToken');
+ghTokenInput.value = localStorage.getItem(LS_GH) || '';
+function setSync(msg) { document.getElementById('syncStatus').innerHTML = `<small>${msg}</small>`; }
+function saveGhToken() {
+  localStorage.setItem(LS_GH, ghTokenInput.value.trim());
+  ghLoad();
+}
+async function ghLoad() {
+  if (!localStorage.getItem(LS_GH)) return;
+  setSync('loading…');
+  try {
+    const r = await fetch(ghUrl, { headers: ghHeaders() });
+    if (r.status === 404) { ghSha = null; setSync('✓ connected (no data yet)'); return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    ghSha = d.sha;
+    const remote = JSON.parse(atob(d.content.replace(/\n/g, '')));
+    // remote wins unless it's empty and local has trades (first sync of existing local data)
+    if (remote.length || !trades.length) {
+      trades = remote;
+      localStorage.setItem(LS_TRADES, JSON.stringify(trades));
+      render();
+    } else ghSave();
+    setSync('✓ synced');
+  } catch (e) { setSync('⚠ ' + e.message); }
+}
+async function ghSave(retried) {
+  if (!localStorage.getItem(LS_GH)) return;
+  setSync('saving…');
+  try {
+    const body = JSON.stringify({
+      message: 'update trades',
+      content: btoa(unescape(encodeURIComponent(JSON.stringify(trades, null, 2)))),
+      ...(ghSha && { sha: ghSha })
+    });
+    const r = await fetch(ghUrl, { method: 'PUT', headers: ghHeaders(), body });
+    if ((r.status === 409 || r.status === 422) && !retried) {
+      // stale sha — refetch and retry once
+      const d = await (await fetch(ghUrl, { headers: ghHeaders() })).json();
+      ghSha = d.sha;
+      return ghSave(true);
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    ghSha = (await r.json()).content.sha;
+    setSync('✓ synced');
+  } catch (e) { setSync('⚠ save failed: ' + e.message + ' — data still in browser, Export JSON as backup'); }
+}
+ghLoad();
 
 // ---------- charts (hand-rolled svg, no deps) ----------
 const W = 460, H = 180, PAD = 30;
