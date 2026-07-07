@@ -86,7 +86,7 @@
     <h2 style="margin-top:14px">Review Extracted Fills</h2>
     <table id="reviewTable"></table>
     <div style="margin-top:10px; display:flex; gap:8px">
-      <button class="primary" onclick="confirmFills()">Add to Log</button>
+      <button class="primary" id="confirmBtn" onclick="confirmFills()">Add to Log</button>
       <button onclick="addBlankFill()">+ Row</button>
       <button class="danger" onclick="discardReview()">Discard</button>
     </div>
@@ -98,6 +98,7 @@
   <h2>Trade Log <small id="logCount"></small></h2>
   <table id="log"></table>
   <div style="margin-top:10px; display:flex; gap:8px">
+    <button onclick="editLog()">✎ Edit Fills</button>
     <button onclick="exportJSON()">Export JSON</button>
     <button onclick="document.getElementById('importFile').click()">Import JSON</button>
     <input type="file" id="importFile" accept=".json" class="hidden">
@@ -195,12 +196,16 @@ async function extract(file) {
 }
 
 // ---------- review table ----------
+let editMode = false;
 function renderReview() {
   const el = document.getElementById('review');
   el.classList.toggle('hidden', pending.length === 0);
+  document.getElementById('confirmBtn').textContent = editMode ? 'Save Log (replaces everything)' : 'Add to Log';
   document.getElementById('reviewTable').innerHTML =
-    '<tr><th>Symbol</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Mult</th><th></th></tr>' +
+    '<tr><th>Date</th><th>Time</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Mult</th><th></th></tr>' +
     pending.map((f, i) => `<tr>
+      <td><input type="date" value="${f.date || document.getElementById('tradeDate').value}" onchange="pending[${i}].date=this.value"></td>
+      <td><input value="${f.time ?? ''}" placeholder="HH:MM:SS" size="8" onchange="pending[${i}].time=this.value||null"></td>
       <td><input value="${f.symbol ?? ''}" onchange="pending[${i}].symbol=this.value"></td>
       <td><select onchange="pending[${i}].side=this.value">
         <option value="buy" ${f.side === 'buy' ? 'selected' : ''}>Buy</option>
@@ -212,15 +217,30 @@ function renderReview() {
     </tr>`).join('');
 }
 function addBlankFill() { pending.push({ symbol: '', side: 'buy', qty: 1, price: null, mult: 100 }); renderReview(); }
-function discardReview() { pending = []; renderReview(); setStatus(''); }
+function discardReview() { pending = []; editMode = false; renderReview(); setStatus(''); }
+function editLog() {
+  pending = trades.map(t => ({ ...t }));
+  if (!pending.length) return setStatus('Log is empty — nothing to edit.');
+  editMode = true;
+  renderReview();
+  document.getElementById('review').scrollIntoView({ behavior: 'smooth' });
+  setStatus('Editing full log — Save replaces everything.');
+}
 function confirmFills() {
   const date = document.getElementById('tradeDate').value;
   const bad = pending.filter(f => !f.symbol || !f.qty || f.price == null || isNaN(f.price));
   if (bad.length) return setStatus(`${bad.length} row(s) missing symbol/qty/price — fix or remove them.`);
-  trades.push(...pending.map(f => ({ date, ...f })));
+  const rows = pending.map(f => ({ ...f, date: f.date || date }));
+  if (editMode) trades = rows; else trades.push(...rows);
   persist();
   discardReview();
-  setStatus('Added. Dashboard updated.');
+  setStatus('Saved. Dashboard updated.');
+}
+// cash-settled / expired worthless: book the closing fill at $0.00
+function settleZero(date, symbol, qty, side) {
+  const mult = trades.find(t => t.date === date && t.symbol === symbol)?.mult || 100;
+  trades.push({ date, symbol, side, qty, price: 0, mult, time: '16:00:00' });
+  persist();
 }
 
 // ---------- pnl ----------
@@ -311,7 +331,8 @@ function render() {
       </tr>`).join('') + (open ? `<tr style="color:var(--dim)">
         <td style="padding-left:24px"><small>↳ open</small></td><td><small>holding ${open.buyQty || open.sellQty}</small></td>
         <td class="num"><small>${open.buyQty}</small></td><td class="num"><small>${open.sellQty}</small></td>
-        <td class="num">—</td><td class="num">—</td><td></td>
+        <td class="num">—</td><td class="num">—</td>
+        <td><button title="Cash settled / expired worthless — close at $0.00" onclick="settleZero('${g.date}','${g.symbol.replace(/'/g, "\\'")}',${open.buyQty || open.sellQty},'${open.buyQty ? 'sell' : 'buy'}')">$0</button></td>
       </tr>` : '');
       return html;
     }).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
