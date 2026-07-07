@@ -129,7 +129,8 @@ function saveKey() {
 
 // ---------- upload / extract ----------
 const drop = document.getElementById('drop'), fileInput = document.getElementById('file');
-document.getElementById('tradeDate').value = new Date().toISOString().slice(0, 10);
+const localDate = () => new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local tz, not UTC
+document.getElementById('tradeDate').value = localDate();
 drop.onclick = () => fileInput.click();
 fileInput.onchange = () => fileInput.files[0] && extract(fileInput.files[0]);
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
@@ -142,7 +143,7 @@ window.addEventListener('paste', e => {
 
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
 
-const PROMPT = 'This is a screenshot of filled/working orders from a trading platform. Extract every FILLED execution (Filled Qty > 0) as JSON. Skip rows where Filled Qty is 0. Treat parent+child bracket rows as separate fills. For price, prefer the "Average" (average fill) price column; fall back to limit price; null if neither shown. Return ONLY a JSON array, no prose: [{"symbol": "...", "side": "buy"|"sell", "qty": <filled qty>, "price": <price>, "mult": <contract multiplier: 100 for options, 1 for stock>}]';
+const PROMPT = 'This is a screenshot of filled/working orders from a trading platform. Extract every FILLED execution (Filled Qty > 0) as JSON. Skip rows where Filled Qty is 0. Treat parent+child bracket rows as separate fills. For price, prefer the "Average" (average fill) price column; fall back to limit price; null if neither shown. Return ONLY a JSON array, no prose: [{"symbol": "...", "side": "buy"|"sell", "qty": <filled qty>, "price": <price>, "mult": <contract multiplier: 100 for options, 1 for stock>, "time": <"HH:MM:SS" from Filled Time column, null if not shown>}]';
 
 async function extract(file) {
   const key = localStorage.getItem(LS_KEY);
@@ -223,18 +224,39 @@ function confirmFills() {
 }
 
 // ---------- pnl ----------
-// ponytail: realized PnL = sell$ - buy$ per (date,symbol); unmatched qty shows as "open", no cross-day position tracking
+// FIFO lot matching per (date,symbol): every sell (trim) becomes its own closed entry;
+// leftover lots collapse into one open entry. Order = fill time if present, else insertion order.
+// ponytail: no cross-day position tracking — day trades assumed flat by close
 function computePnl(list) {
-  const groups = {};
-  for (const t of list) {
-    const k = t.date + '|' + t.symbol;
-    const g = groups[k] ||= { date: t.date, symbol: t.symbol, buyQty: 0, sellQty: 0, pnl: 0, cost: 0 };
-    const cash = t.qty * t.price * (t.mult || 1);
-    if (t.side === 'sell') { g.pnl += cash; g.sellQty += t.qty; }
-    else { g.pnl -= cash; g.buyQty += t.qty; g.cost += cash; }
+  const bySym = {};
+  list.forEach((t, i) => (bySym[t.date + '|' + t.symbol] ||= []).push({ ...t, i }));
+  const out = [];
+  for (const k in bySym) {
+    const fills = bySym[k].sort((a, b) => (a.time && b.time) ? a.time.localeCompare(b.time) : a.i - b.i);
+    const { date, symbol } = fills[0];
+    const longs = [], shorts = []; // unmatched lots {qty, price, mult}
+    for (const f of fills) {
+      const mult = f.mult || 1;
+      const opp = f.side === 'sell' ? longs : shorts;
+      let qty = f.qty, oppCash = 0, matched = 0;
+      while (qty > 0 && opp.length) {
+        const lot = opp[0], take = Math.min(qty, lot.qty);
+        oppCash += take * lot.price * lot.mult;
+        lot.qty -= take; qty -= take; matched += take;
+        if (!lot.qty) opp.shift();
+      }
+      if (matched) {
+        const cash = matched * f.price * mult;
+        const pnl = f.side === 'sell' ? cash - oppCash : oppCash - cash;
+        const base = f.side === 'sell' ? oppCash : cash; // buy-side cash = cost basis
+        out.push({ date, symbol, time: f.time, buyQty: matched, sellQty: matched, pnl, pct: base > 0 ? 100 * pnl / base : null, open: false });
+      }
+      if (qty > 0) (f.side === 'sell' ? shorts : longs).push({ qty, price: f.price, mult });
+    }
+    const openB = longs.reduce((s, l) => s + l.qty, 0), openS = shorts.reduce((s, l) => s + l.qty, 0);
+    if (openB || openS) out.push({ date, symbol, buyQty: openB, sellQty: openS, pnl: 0, pct: null, open: true });
   }
-  // pct = realized pnl vs total buy cost
-  return Object.values(groups).map(g => ({ ...g, open: g.buyQty !== g.sellQty, pct: g.cost > 0 ? 100 * g.pnl / g.cost : null }));
+  return out;
 }
 
 // ---------- render ----------
@@ -248,7 +270,7 @@ function render() {
   for (const g of groups) byDay[g.date] = (byDay[g.date] || 0) + g.pnl;
   const days = Object.keys(byDay).sort();
   const total = days.reduce((s, d) => s + byDay[d], 0);
-  const today = byDay[new Date().toISOString().slice(0, 10)] || 0;
+  const today = byDay[localDate()] || 0;
   const wins = closed.filter(g => g.pnl > 0).length;
 
   document.getElementById('stats').innerHTML = [
@@ -264,13 +286,13 @@ function render() {
   document.getElementById('cumChart').innerHTML = lineChart(days, days.map(d => run += byDay[d]));
 
   document.getElementById('logCount').textContent = `(${trades.length} fills)`;
-  const rows = groups.sort((a, b) => b.date.localeCompare(a.date) || a.symbol.localeCompare(b.symbol));
+  const rows = groups.sort((a, b) => b.date.localeCompare(a.date) || a.symbol.localeCompare(b.symbol) || (a.time || '').localeCompare(b.time || ''));
   document.getElementById('log').innerHTML =
     '<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th class="num">% Gain</th><th></th></tr>' +
     rows.map(g => `<tr>
-      <td>${g.date}</td><td>${g.symbol}${g.open ? ' <small>(open)</small>' : ''}</td>
+      <td>${g.date}${g.time ? ` <small>${g.time}</small>` : ''}</td><td>${g.symbol}${g.open ? ' <small>(open)</small>' : ''}</td>
       <td class="num buy">${g.buyQty}</td><td class="num sell">${g.sellQty}</td>
-      <td class="num ${cls(g.pnl)}">${money(g.pnl)}</td>
+      <td class="num ${g.open ? '' : cls(g.pnl)}">${g.open ? '—' : money(g.pnl)}</td>
       <td class="num ${g.pct == null ? '' : cls(g.pct)}">${g.pct == null ? '—' : g.pct.toFixed(1) + '%'}</td>
       <td><button class="danger" title="Delete all fills for this trade" onclick="deleteGroup('${g.date}','${g.symbol.replace(/'/g, "\\'")}')">✕</button></td>
     </tr>`).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
@@ -381,11 +403,20 @@ document.getElementById('importFile').onchange = async e => {
 
 // self-check: fails loud in console if pnl math breaks
 (() => {
-  const g = computePnl([
-    { date: 'd', symbol: 'X', side: 'buy', qty: 2, price: 0.40, mult: 100 },
-    { date: 'd', symbol: 'X', side: 'sell', qty: 2, price: 0.80, mult: 100 },
-  ])[0];
-  console.assert(Math.abs(g.pnl - 80) < 1e-9 && !g.open && Math.abs(g.pct - 100) < 1e-9, 'PnL self-check FAILED', g);
+  // trim scenario: buy 2, sell 1 (trim), sell 1 (runner) → two separate closed entries
+  const es = computePnl([
+    { date: 'd', symbol: 'X', side: 'buy', qty: 2, price: 0.40, mult: 100, time: '09:30:00' },
+    { date: 'd', symbol: 'X', side: 'sell', qty: 1, price: 0.80, mult: 100, time: '09:35:00' },
+    { date: 'd', symbol: 'X', side: 'sell', qty: 1, price: 1.20, mult: 100, time: '09:40:00' },
+  ]);
+  console.assert(es.length === 2 && Math.abs(es[0].pnl - 40) < 1e-9 && Math.abs(es[0].pct - 100) < 1e-9
+    && Math.abs(es[1].pnl - 80) < 1e-9 && Math.abs(es[1].pct - 200) < 1e-9, 'PnL trim self-check FAILED', es);
+  // open remainder: buy 2, sell 1 → one closed trim + one open entry
+  const os = computePnl([
+    { date: 'd', symbol: 'Y', side: 'buy', qty: 2, price: 1.00, mult: 100 },
+    { date: 'd', symbol: 'Y', side: 'sell', qty: 1, price: 1.50, mult: 100 },
+  ]);
+  console.assert(os.length === 2 && Math.abs(os[0].pnl - 50) < 1e-9 && os[1].open && os[1].buyQty === 1, 'PnL open self-check FAILED', os);
 })();
 
 render();
