@@ -249,7 +249,7 @@ function computePnl(list) {
         const cash = matched * f.price * mult;
         const pnl = f.side === 'sell' ? cash - oppCash : oppCash - cash;
         const base = f.side === 'sell' ? oppCash : cash; // buy-side cash = cost basis
-        out.push({ date, symbol, time: f.time, buyQty: matched, sellQty: matched, pnl, pct: base > 0 ? 100 * pnl / base : null, open: false });
+        out.push({ date, symbol, time: f.time, buyQty: matched, sellQty: matched, pnl, base, pct: base > 0 ? 100 * pnl / base : null, open: false });
       }
       if (qty > 0) (f.side === 'sell' ? shorts : longs).push({ qty, price: f.price, mult });
     }
@@ -286,16 +286,35 @@ function render() {
   document.getElementById('cumChart').innerHTML = lineChart(days, days.map(d => run += byDay[d]));
 
   document.getElementById('logCount').textContent = `(${trades.length} fills)`;
-  const rows = groups.sort((a, b) => b.date.localeCompare(a.date) || a.symbol.localeCompare(b.symbol) || (a.time || '').localeCompare(b.time || ''));
+  // group entries by (date,symbol): parent row = strike totals, child rows = individual trims
+  const bySym = {};
+  for (const g of groups.sort((a, b) => (a.time || '').localeCompare(b.time || ''))) (bySym[g.date + '|' + g.symbol] ||= []).push(g);
+  const pctCell = p => `<td class="num ${p == null ? '' : cls(p)}">${p == null ? '—' : p.toFixed(1) + '%'}</td>`;
   document.getElementById('log').innerHTML =
     '<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th class="num">% Gain</th><th></th></tr>' +
-    rows.map(g => `<tr>
-      <td>${g.date}${g.time ? ` <small>${g.time}</small>` : ''}</td><td>${g.symbol}${g.open ? ' <small>(open)</small>' : ''}</td>
-      <td class="num buy">${g.buyQty}</td><td class="num sell">${g.sellQty}</td>
-      <td class="num ${g.open ? '' : cls(g.pnl)}">${g.open ? '—' : money(g.pnl)}</td>
-      <td class="num ${g.pct == null ? '' : cls(g.pct)}">${g.pct == null ? '—' : g.pct.toFixed(1) + '%'}</td>
-      <td><button class="danger" title="Delete all fills for this trade" onclick="deleteGroup('${g.date}','${g.symbol.replace(/'/g, "\\'")}')">✕</button></td>
-    </tr>`).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
+    Object.values(bySym).sort((a, b) => b[0].date.localeCompare(a[0].date) || a[0].symbol.localeCompare(b[0].symbol)).map(entries => {
+      const closed = entries.filter(e => !e.open), open = entries.find(e => e.open);
+      const pnl = closed.reduce((s, e) => s + e.pnl, 0), base = closed.reduce((s, e) => s + e.base, 0);
+      const buys = entries.reduce((s, e) => s + e.buyQty, 0), sells = entries.reduce((s, e) => s + e.sellQty, 0);
+      const g = entries[0];
+      let html = `<tr>
+        <td>${g.date}</td><td>${g.symbol}${open ? ' <small>(open)</small>' : ''}</td>
+        <td class="num buy">${buys}</td><td class="num sell">${sells}</td>
+        <td class="num ${closed.length ? cls(pnl) : ''}">${closed.length ? money(pnl) : '—'}</td>
+        ${pctCell(base > 0 ? 100 * pnl / base : null)}
+        <td><button class="danger" title="Delete all fills for this trade" onclick="deleteGroup('${g.date}','${g.symbol.replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>`;
+      if (entries.length > 1 || open) html += closed.map(e => `<tr style="color:var(--dim)">
+        <td style="padding-left:24px"><small>↳ ${e.time || 'trim'}</small></td><td><small>sold ${e.sellQty}</small></td>
+        <td class="num"><small>${e.buyQty}</small></td><td class="num"><small>${e.sellQty}</small></td>
+        <td class="num ${cls(e.pnl)}"><small>${money(e.pnl)}</small></td>${pctCell(e.pct)}<td></td>
+      </tr>`).join('') + (open ? `<tr style="color:var(--dim)">
+        <td style="padding-left:24px"><small>↳ open</small></td><td><small>holding ${open.buyQty || open.sellQty}</small></td>
+        <td class="num"><small>${open.buyQty}</small></td><td class="num"><small>${open.sellQty}</small></td>
+        <td class="num">—</td><td class="num">—</td><td></td>
+      </tr>` : '');
+      return html;
+    }).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
 }
 
 function deleteGroup(date, symbol) {
