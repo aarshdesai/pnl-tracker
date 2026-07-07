@@ -99,6 +99,7 @@
   <table id="log"></table>
   <div style="margin-top:10px; display:flex; gap:8px">
     <button onclick="editLog()">✎ Edit Fills</button>
+    <button onclick="addAdjustment()">＋ Adjustment</button>
     <button onclick="exportJSON()">Export JSON</button>
     <button onclick="document.getElementById('importFile').click()">Import JSON</button>
     <input type="file" id="importFile" accept=".json" class="hidden">
@@ -219,7 +220,7 @@ function renderReview() {
 function addBlankFill() { pending.push({ symbol: '', side: 'buy', qty: 1, price: null, mult: 100 }); renderReview(); }
 function discardReview() { pending = []; editMode = false; renderReview(); setStatus(''); }
 function editLog() {
-  pending = trades.map(t => ({ ...t }));
+  pending = trades.filter(t => !t.adj).map(t => ({ ...t })); // adjustments managed via their own ✕ button
   if (!pending.length) return setStatus('Log is empty — nothing to edit.');
   editMode = true;
   renderReview();
@@ -231,11 +232,22 @@ function confirmFills() {
   const bad = pending.filter(f => !f.symbol || !f.qty || f.price == null || isNaN(f.price));
   if (bad.length) return setStatus(`${bad.length} row(s) missing symbol/qty/price — fix or remove them.`);
   const rows = pending.map(f => ({ ...f, date: f.date || date }));
-  if (editMode) trades = rows; else trades.push(...rows);
+  if (editMode) trades = [...trades.filter(t => t.adj), ...rows]; // keep adjustments through full-log edits
+  else trades.push(...rows);
   persist();
   discardReview();
   setStatus('Saved. Dashboard updated.');
 }
+// one-time balance adjustment (e.g. YTD carried over from another broker)
+function addAdjustment() {
+  const amount = parseFloat(prompt('Adjustment amount in $ (negative allowed):'));
+  if (isNaN(amount)) return;
+  const symbol = prompt('Note:', 'Balance adjustment') || 'Balance adjustment';
+  const date = prompt('Date (YYYY-MM-DD):', localDate()) || localDate();
+  trades.push({ adj: true, date, symbol, amount });
+  persist();
+}
+
 // cash-settled / expired worthless: book the closing fill at $0.00
 function settleZero(date, symbol, qty, side) {
   const mult = trades.find(t => t.date === date && t.symbol === symbol)?.mult || 100;
@@ -249,7 +261,7 @@ function settleZero(date, symbol, qty, side) {
 // ponytail: no cross-day position tracking — day trades assumed flat by close
 function computePnl(list) {
   const bySym = {};
-  list.forEach((t, i) => (bySym[t.date + '|' + t.symbol] ||= []).push({ ...t, i }));
+  list.filter(t => !t.adj).forEach((t, i) => (bySym[t.date + '|' + t.symbol] ||= []).push({ ...t, i }));
   const out = [];
   for (const k in bySym) {
     const fills = bySym[k].sort((a, b) => (a.time && b.time) ? a.time.localeCompare(b.time) : a.i - b.i);
@@ -285,9 +297,11 @@ function cls(v) { return v >= 0 ? 'pos' : 'neg'; }
 
 function render() {
   const groups = computePnl(trades);
+  const adjs = trades.filter(t => t.adj);
   const closed = groups.filter(g => !g.open);
   const byDay = {};
   for (const g of groups) byDay[g.date] = (byDay[g.date] || 0) + g.pnl;
+  for (const a of adjs) byDay[a.date] = (byDay[a.date] || 0) + a.amount; // adjustments hit totals/charts, not win rate
   const days = Object.keys(byDay).sort();
   const total = days.reduce((s, d) => s + byDay[d], 0);
   const today = byDay[localDate()] || 0;
@@ -298,7 +312,7 @@ function render() {
     ['Today', money(today), cls(today)],
     ['Win Rate', closed.length ? Math.round(100 * wins / closed.length) + '%' : '—', ''],
     ['Closed Trades', closed.length, ''],
-    ['Trading Days', days.length, ''],
+    ['Trading Days', new Set(groups.map(g => g.date)).size, ''],
   ].map(([l, v, c]) => `<div class="stat"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join('');
 
   document.getElementById('dailyChart').innerHTML = barChart(days, days.map(d => byDay[d]));
@@ -335,7 +349,13 @@ function render() {
         <td><button title="Cash settled / expired worthless — close at $0.00" onclick="settleZero('${g.date}','${g.symbol.replace(/'/g, "\\'")}',${open.buyQty || open.sellQty},'${open.buyQty ? 'sell' : 'buy'}')">$0</button></td>
       </tr>` : '');
       return html;
-    }).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
+    }).join('') +
+    adjs.map(a => `<tr>
+      <td>${a.date}</td><td>⚖ ${a.symbol} <small>(adjustment)</small></td>
+      <td class="num">—</td><td class="num">—</td>
+      <td class="num ${cls(a.amount)}">${money(a.amount)}</td><td class="num">—</td>
+      <td><button class="danger" title="Delete adjustment" onclick="deleteGroup('${a.date}','${a.symbol.replace(/'/g, "\\'")}')">✕</button></td>
+    </tr>`).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
 }
 
 function deleteGroup(date, symbol) {
