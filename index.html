@@ -56,7 +56,13 @@
 </head>
 <body>
 <h1 style="display:flex;justify-content:space-between;align-items:center">📈 Day Trading PNL Tracker
-  <button onclick="document.getElementById('keyPanel').classList.toggle('hidden')" title="Show/hide API keys" style="font-size:13px">⚙ Keys</button>
+  <span style="display:flex;gap:8px">
+    <select id="scope" onchange="localStorage.setItem('pnl_scope', this.value); render()" style="font-size:13px">
+      <option value="spx">SPX only</option>
+      <option value="all">All trades</option>
+    </select>
+    <button onclick="document.getElementById('keyPanel').classList.toggle('hidden')" title="Show/hide API keys" style="font-size:13px">⚙ Keys</button>
+  </span>
 </h1>
 
 <div class="panel" id="keyPanel">
@@ -317,8 +323,12 @@ function money(v) { return (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2); }
 function cls(v) { return v >= 0 ? 'pos' : 'neg'; }
 
 function render() {
-  const groups = computePnl(trades);
-  const adjs = trades.filter(t => t.adj);
+  const scope = localStorage.getItem('pnl_scope') || 'spx';
+  document.getElementById('scope').value = scope;
+  // SPX focus: only SPX/SPXW fills; adjustments (non-SPX history) excluded
+  const data = scope === 'spx' ? trades.filter(t => !t.adj && /^SPXW?[\s$]/.test(t.symbol)) : trades;
+  const groups = computePnl(data);
+  const adjs = data.filter(t => t.adj);
   const closed = groups.filter(g => !g.open);
   const byDay = {};
   for (const g of groups) byDay[g.date] = (byDay[g.date] || 0) + g.pnl;
@@ -341,7 +351,7 @@ function render() {
   document.getElementById('cumChart').innerHTML = lineChart(days, days.map(d => run += byDay[d]));
 
   renderInsights(closed);
-  document.getElementById('logCount').textContent = `(${trades.length} fills)`;
+  document.getElementById('logCount').textContent = `(${data.filter(t => !t.adj).length} fills${scope === 'spx' ? ', SPX only' : ''})`;
   // group entries by (date,symbol): parent row = strike totals, child rows = individual trims
   const bySym = {};
   for (const g of groups.sort((a, b) => (a.time || '').localeCompare(b.time || ''))) (bySym[g.date + '|' + g.symbol] ||= []).push(g);
@@ -507,15 +517,21 @@ function renderInsights(closed) {
     }).join('');
   };
 
-  // day of week (all trades) + hour of day (timestamped trades only)
+  // day of week (all trades) + 30-min windows (timestamped trades only)
   const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const byDow = bucket(closed, e => new Date(e.date + 'T12:00').getDay());
   const dowKeys = [1, 2, 3, 4, 5].filter(k => byDow[k]);
-  const byHour = bucket(closed.filter(e => e.time), e => +e.time.slice(0, 2));
+  const byHour = bucket(closed.filter(e => e.time), e => +e.time.slice(0, 2) + (+e.time.slice(3, 5) < 30 ? 0 : 0.5));
   const hourKeys = Object.keys(byHour).map(Number).sort((a, b) => a - b);
+  const hLbl = k => `${Math.floor(k)}:${k % 1 ? '30' : '00'}`;
   const MIN_N = 3;
   const windows = hourKeys.filter(h => byHour[h].n >= MIN_N && byHour[h].avgPct != null);
   const bestH = windows.length ? windows.reduce((a, b) => byHour[a].avgPct > byHour[b].avgPct ? a : b) : null;
+  // the power-hour close: 15:30–16:00 ET
+  const inWin = closed.filter(e => e.time && e.time >= '15:30' && e.time < '16:00');
+  const winPnl = inWin.reduce((s, e) => s + e.pnl, 0), winW = inWin.filter(e => e.pnl > 0).length;
+  const winPcts = inWin.filter(e => e.pct != null);
+  const winAvg = winPcts.length ? winPcts.reduce((s, e) => s + e.pct, 0) / winPcts.length : null;
 
   // by ticker
   const byTicker = bucket(closed, e => e.symbol.split(' ')[0]);
@@ -529,11 +545,12 @@ function renderInsights(closed) {
       <div class="stat"><div class="label">Best Trade</div><div class="value pos" style="font-size:16px">${money(best.pnl)}<br><small style="color:var(--dim)">${best.symbol.split(' ')[0]} ${best.date}</small></div></div>
       <div class="stat"><div class="label">Worst Trade</div><div class="value neg" style="font-size:16px">${money(worst.pnl)}<br><small style="color:var(--dim)">${worst.symbol.split(' ')[0]} ${worst.date}</small></div></div>
       <div class="stat"><div class="label">Win / Loss Streaks</div><div class="value" style="font-size:16px"><span class="pos">${maxW}W</span> max · <span class="neg">${maxL}L</span> max</div></div>
+      <div class="stat"><div class="label">Last 30 Min (15:30–16:00)</div><div class="value ${cls(winPnl)}" style="font-size:16px">${inWin.length ? `${money(winPnl)}<br><small style="color:var(--dim)">${inWin.length} trades · ${Math.round(100 * winW / inWin.length)}% win${winAvg != null ? ` · avg ${winAvg.toFixed(0)}%` : ''}</small>` : '<small style="color:var(--dim)">no timed trades yet</small>'}</div></div>
     </div>
-    ${bestH != null ? `<div class="callout">⏰ <b>Best window: ${bestH}:00–${bestH + 1}:00 ET</b> — avg <b class="${cls(byHour[bestH].avgPct)}">${byHour[bestH].avgPct.toFixed(1)}%</b> per trade, ${Math.round(100 * byHour[bestH].w / byHour[bestH].n)}% win rate over ${byHour[bestH].n} trades</div>` : ''}
+    ${bestH != null ? `<div class="callout">⏰ <b>Best window: ${hLbl(bestH)}–${hLbl(bestH + 0.5)} ET</b> — avg <b class="${cls(byHour[bestH].avgPct)}">${byHour[bestH].avgPct.toFixed(1)}%</b> per trade, ${Math.round(100 * byHour[bestH].w / byHour[bestH].n)}% win rate over ${byHour[bestH].n} trades</div>` : ''}
     <div class="icols">
       <div><h2>P&L by Weekday</h2>${barRows(byDow, dowKeys, k => DOW[k], b => b.pnl, b => `${money(b.pnl)}`)}</div>
-      <div><h2>Avg % Gain by Hour</h2>${hourKeys.length ? barRows(byHour, hourKeys.filter(h => byHour[h].avgPct != null), h => `${h}:00`, b => b.avgPct, (b, v) => `${v.toFixed(0)}% · ${b.n}t`) : '<small style="color:var(--dim)">Needs fill times — screenshot uploads include them.</small>'}</div>
+      <div><h2>Avg % Gain by 30-Min Window</h2>${hourKeys.length ? barRows(byHour, hourKeys.filter(h => byHour[h].avgPct != null), hLbl, b => b.avgPct, (b, v) => `${v.toFixed(0)}% · ${b.n}t`) : '<small style="color:var(--dim)">Needs fill times — screenshot uploads include them.</small>'}</div>
       <div><h2>P&L by Ticker</h2>${barRows(byTicker, topBottom, k => k, b => b.pnl, b => money(b.pnl))}</div>
     </div>`;
 }
