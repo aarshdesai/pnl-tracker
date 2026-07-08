@@ -350,16 +350,25 @@ function render() {
       </tr>` : '');
       return html;
     }).join('') +
-    adjs.map(a => `<tr>
-      <td>${a.date}</td><td>⚖ ${a.symbol} <small>(adjustment)</small></td>
-      <td class="num">—</td><td class="num">—</td>
-      <td class="num ${cls(a.amount)}">${money(a.amount)}</td><td class="num">—</td>
-      <td><button class="danger" title="Delete adjustment" onclick="deleteGroup('${a.date}','${a.symbol.replace(/'/g, "\\'")}')">✕</button></td>
-    </tr>`).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
+    Object.values(adjs.reduce((m, a) => { (m[a.symbol] ||= []).push(a); return m; }, {})).map(list => {
+      const total = list.reduce((s, a) => s + a.amount, 0), dates = list.map(a => a.date).sort();
+      return `<tr>
+        <td>${dates[0]}${list.length > 1 ? ` → ${dates[dates.length - 1]}` : ''}</td>
+        <td>⚖ ${list[0].symbol} <small>(${list.length > 1 ? list.length + ' daily adjustments' : 'adjustment'})</small></td>
+        <td class="num">—</td><td class="num">—</td>
+        <td class="num ${cls(total)}">${money(total)}</td><td class="num">—</td>
+        <td><button class="danger" title="Delete adjustment(s)" onclick="deleteAdj('${list[0].symbol.replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
 }
 
 function deleteGroup(date, symbol) {
   trades = trades.filter(t => !(t.date === date && t.symbol === symbol));
+  persist();
+}
+function deleteAdj(symbol) {
+  if (!confirm(`Delete all "${symbol}" adjustments?`)) return;
+  trades = trades.filter(t => !(t.adj && t.symbol === symbol));
   persist();
 }
 function persist() { localStorage.setItem(LS_TRADES, JSON.stringify(trades)); render(); ghSave(); }
