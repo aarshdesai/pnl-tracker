@@ -34,7 +34,7 @@
   .brow .lbl { width: 58px; color: var(--dim); flex-shrink: 0; }
   .brow .track { flex: 1; display: flex; }
   .brow .bar { height: 13px; border-radius: 3px; min-width: 2px; }
-  .brow .val { width: 74px; text-align: right; flex-shrink: 0; }
+  .brow .val { min-width: 74px; text-align: right; flex-shrink: 0; white-space: nowrap; }
   .callout { background: #1c2733; border: 1px solid #2b4a63; border-radius: 8px; padding: 10px 14px; margin-top: 12px; font-size: 13px; }
   details { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
   summary { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; cursor: pointer; }
@@ -527,6 +527,9 @@ function renderInsights(closed) {
   const MIN_N = 3;
   const windows = hourKeys.filter(h => byHour[h].n >= MIN_N && byHour[h].avgPct != null);
   const bestH = windows.length ? windows.reduce((a, b) => byHour[a].avgPct > byHour[b].avgPct ? a : b) : null;
+  // EOD minute-by-minute: last 10 min before close (15:50–16:00 ET)
+  const byMin = bucket(closed.filter(e => e.time && e.time >= '15:50' && e.time < '16:00'), e => e.time.slice(0, 5));
+  const minKeys = Object.keys(byMin).sort();
   // the power-hour close: 15:30–16:00 ET
   const inWin = closed.filter(e => e.time && e.time >= '15:30' && e.time < '16:00');
   const winPnl = inWin.reduce((s, e) => s + e.pnl, 0), winW = inWin.filter(e => e.pnl > 0).length;
@@ -551,6 +554,7 @@ function renderInsights(closed) {
     <div class="icols">
       <div><h2>P&L by Weekday</h2>${barRows(byDow, dowKeys, k => DOW[k], b => b.pnl, b => `${money(b.pnl)}`)}</div>
       <div><h2>Avg % Gain by 30-Min Window</h2>${hourKeys.length ? barRows(byHour, hourKeys.filter(h => byHour[h].avgPct != null), hLbl, b => b.avgPct, (b, v) => `${v.toFixed(0)}% · ${b.n}t`) : '<small style="color:var(--dim)">Needs fill times — screenshot uploads include them.</small>'}</div>
+      <div><h2>EOD by Minute (15:50–16:00)</h2>${minKeys.length ? barRows(byMin, minKeys, k => k, b => b.avgPct ?? 0, (b, v) => `${b.avgPct != null ? b.avgPct.toFixed(0) + '%' : '—'} · ${b.n}t · ${money(b.pnl)}`) : '<small style="color:var(--dim)">No timed EOD trades yet.</small>'}</div>
       <div><h2>P&L by Ticker</h2>${barRows(byTicker, topBottom, k => k, b => b.pnl, b => money(b.pnl))}</div>
     </div>`;
 }
