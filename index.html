@@ -29,6 +29,13 @@
   button.primary { background: #1f6feb; border-color: #1f6feb; }
   button.danger { color: var(--red); }
   table { width: 100%; border-collapse: collapse; }
+  .icols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-top: 14px; }
+  .brow { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 5px; }
+  .brow .lbl { width: 58px; color: var(--dim); flex-shrink: 0; }
+  .brow .track { flex: 1; display: flex; }
+  .brow .bar { height: 13px; border-radius: 3px; min-width: 2px; }
+  .brow .val { width: 74px; text-align: right; flex-shrink: 0; }
+  .callout { background: #1c2733; border: 1px solid #2b4a63; border-radius: 8px; padding: 10px 14px; margin-top: 12px; font-size: 13px; }
   details { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
   summary { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; cursor: pointer; }
   summary:hover { background: #1c2129; border-radius: 8px; }
@@ -80,6 +87,8 @@
     <div id="cumChart"></div>
   </div>
 </div>
+
+<div class="panel" id="insights"></div>
 
 <div class="panel">
   <h2>Upload Trades</h2>
@@ -331,6 +340,7 @@ function render() {
   let run = 0;
   document.getElementById('cumChart').innerHTML = lineChart(days, days.map(d => run += byDay[d]));
 
+  renderInsights(closed);
   document.getElementById('logCount').textContent = `(${trades.length} fills)`;
   // group entries by (date,symbol): parent row = strike totals, child rows = individual trims
   const bySym = {};
@@ -458,6 +468,75 @@ async function ghSave(retried) {
   } catch (e) { setSync('⚠ save failed: ' + e.message + ' — data still in browser, Export JSON as backup'); }
 }
 ghLoad();
+
+// ---------- insights ----------
+function renderInsights(closed) {
+  const el = document.getElementById('insights');
+  if (closed.length < 3) { el.innerHTML = ''; el.style.display = 'none'; return; }
+  el.style.display = '';
+  const wins = closed.filter(e => e.pnl > 0), losses = closed.filter(e => e.pnl < 0);
+  const grossW = wins.reduce((s, e) => s + e.pnl, 0), grossL = -losses.reduce((s, e) => s + e.pnl, 0);
+  const pf = grossL ? (grossW / grossL).toFixed(2) : '∞';
+  const best = closed.reduce((a, b) => a.pnl > b.pnl ? a : b), worst = closed.reduce((a, b) => a.pnl < b.pnl ? a : b);
+  // streaks (chronological)
+  const chron = [...closed].sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+  let curW = 0, maxW = 0, curL = 0, maxL = 0;
+  for (const e of chron) {
+    if (e.pnl > 0) { curW++; curL = 0; } else if (e.pnl < 0) { curL++; curW = 0; }
+    maxW = Math.max(maxW, curW); maxL = Math.max(maxL, curL);
+  }
+
+  const bucket = (list, keyFn) => {
+    const m = {};
+    for (const e of list) {
+      const k = keyFn(e); if (k == null) continue;
+      const b = m[k] ||= { pnl: 0, n: 0, w: 0, pcts: [] };
+      b.pnl += e.pnl; b.n++; if (e.pnl > 0) b.w++;
+      if (e.pct != null) b.pcts.push(e.pct);
+    }
+    for (const b of Object.values(m)) b.avgPct = b.pcts.length ? b.pcts.reduce((s, v) => s + v, 0) / b.pcts.length : null;
+    return m;
+  };
+  const barRows = (m, keys, labelFn, valFn, valTxt) => {
+    const maxAbs = Math.max(...keys.map(k => Math.abs(valFn(m[k]))), 1e-9);
+    return keys.map(k => {
+      const b = m[k], v = valFn(b), w = Math.abs(v) / maxAbs * 100;
+      return `<div class="brow"><span class="lbl">${labelFn(k)}</span>
+        <span class="track"><span class="bar" style="width:${w}%;background:var(--${v >= 0 ? 'green' : 'red'})"></span></span>
+        <span class="val ${cls(v)}">${valTxt(b, v)}</span></div>`;
+    }).join('');
+  };
+
+  // day of week (all trades) + hour of day (timestamped trades only)
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const byDow = bucket(closed, e => new Date(e.date + 'T12:00').getDay());
+  const dowKeys = [1, 2, 3, 4, 5].filter(k => byDow[k]);
+  const byHour = bucket(closed.filter(e => e.time), e => +e.time.slice(0, 2));
+  const hourKeys = Object.keys(byHour).map(Number).sort((a, b) => a - b);
+  const MIN_N = 3;
+  const windows = hourKeys.filter(h => byHour[h].n >= MIN_N && byHour[h].avgPct != null);
+  const bestH = windows.length ? windows.reduce((a, b) => byHour[a].avgPct > byHour[b].avgPct ? a : b) : null;
+
+  // by ticker
+  const byTicker = bucket(closed, e => e.symbol.split(' ')[0]);
+  const tickerKeys = Object.keys(byTicker).sort((a, b) => byTicker[b].pnl - byTicker[a].pnl);
+  const topBottom = [...new Set([...tickerKeys.slice(0, 3), ...tickerKeys.slice(-3)])];
+
+  el.innerHTML = `<h2>Insights</h2>
+    <div class="stats" style="margin-bottom:0">
+      <div class="stat"><div class="label">Profit Factor</div><div class="value ${+pf >= 1 ? 'pos' : 'neg'}">${pf}</div></div>
+      <div class="stat"><div class="label">Avg Win / Avg Loss</div><div class="value" style="font-size:16px"><span class="pos">${money(wins.length ? grossW / wins.length : 0)}</span> / <span class="neg">${money(losses.length ? -grossL / losses.length : 0)}</span></div></div>
+      <div class="stat"><div class="label">Best Trade</div><div class="value pos" style="font-size:16px">${money(best.pnl)}<br><small style="color:var(--dim)">${best.symbol.split(' ')[0]} ${best.date}</small></div></div>
+      <div class="stat"><div class="label">Worst Trade</div><div class="value neg" style="font-size:16px">${money(worst.pnl)}<br><small style="color:var(--dim)">${worst.symbol.split(' ')[0]} ${worst.date}</small></div></div>
+      <div class="stat"><div class="label">Win / Loss Streaks</div><div class="value" style="font-size:16px"><span class="pos">${maxW}W</span> max · <span class="neg">${maxL}L</span> max</div></div>
+    </div>
+    ${bestH != null ? `<div class="callout">⏰ <b>Best window: ${bestH}:00–${bestH + 1}:00 ET</b> — avg <b class="${cls(byHour[bestH].avgPct)}">${byHour[bestH].avgPct.toFixed(1)}%</b> per trade, ${Math.round(100 * byHour[bestH].w / byHour[bestH].n)}% win rate over ${byHour[bestH].n} trades</div>` : ''}
+    <div class="icols">
+      <div><h2>P&L by Weekday</h2>${barRows(byDow, dowKeys, k => DOW[k], b => b.pnl, b => `${money(b.pnl)}`)}</div>
+      <div><h2>Avg % Gain by Hour</h2>${hourKeys.length ? barRows(byHour, hourKeys.filter(h => byHour[h].avgPct != null), h => `${h}:00`, b => b.avgPct, (b, v) => `${v.toFixed(0)}% · ${b.n}t`) : '<small style="color:var(--dim)">Needs fill times — screenshot uploads include them.</small>'}</div>
+      <div><h2>P&L by Ticker</h2>${barRows(byTicker, topBottom, k => k, b => b.pnl, b => money(b.pnl))}</div>
+    </div>`;
+}
 
 // ---------- charts (hand-rolled svg, no deps) ----------
 const W = 640, H = 230, PL = 54, PR = 14, PT = 14, PB = 26;
