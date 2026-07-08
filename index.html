@@ -29,6 +29,11 @@
   button.primary { background: #1f6feb; border-color: #1f6feb; }
   button.danger { color: var(--red); }
   table { width: 100%; border-collapse: collapse; }
+  details { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+  summary { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; cursor: pointer; }
+  summary:hover { background: #1c2129; border-radius: 8px; }
+  details > table { margin: 4px 0 8px; }
+  summary .period { font-weight: 600; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
   th { color: var(--dim); font-weight: 500; }
   td input { width: 100%; padding: 3px 6px; }
@@ -95,8 +100,15 @@
 </div>
 
 <div class="panel">
-  <h2>Trade Log <small id="logCount"></small></h2>
-  <table id="log"></table>
+  <h2 style="display:flex;justify-content:space-between;align-items:center">
+    <span>Trade Log <small id="logCount"></small></span>
+    <select id="logView" onchange="render()">
+      <option value="day">By Day</option>
+      <option value="month">By Month</option>
+      <option value="year">By Year</option>
+    </select>
+  </h2>
+  <div id="log"></div>
   <div style="margin-top:10px; display:flex; gap:8px">
     <button onclick="editLog()">✎ Edit Fills</button>
     <button onclick="addAdjustment()">＋ Adjustment</button>
@@ -324,9 +336,7 @@ function render() {
   const bySym = {};
   for (const g of groups.sort((a, b) => (a.time || '').localeCompare(b.time || ''))) (bySym[g.date + '|' + g.symbol] ||= []).push(g);
   const pctCell = p => `<td class="num ${p == null ? '' : cls(p)}">${p == null ? '—' : p.toFixed(1) + '%'}</td>`;
-  document.getElementById('log').innerHTML =
-    '<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th class="num">% Gain</th><th></th></tr>' +
-    Object.values(bySym).sort((a, b) => b[0].date.localeCompare(a[0].date) || a[0].symbol.localeCompare(b[0].symbol)).map(entries => {
+  const symGroupRow = entries => {
       const closed = entries.filter(e => !e.open), open = entries.find(e => e.open);
       const pnl = closed.reduce((s, e) => s + e.pnl, 0), base = closed.reduce((s, e) => s + e.base, 0);
       const buys = entries.reduce((s, e) => s + e.buyQty, 0), sells = entries.reduce((s, e) => s + e.sellQty, 0);
@@ -349,17 +359,40 @@ function render() {
         <td><button title="Cash settled / expired worthless — close at $0.00" onclick="settleZero('${g.date}','${g.symbol.replace(/'/g, "\\'")}',${open.buyQty || open.sellQty},'${open.buyQty ? 'sell' : 'buy'}')">$0</button></td>
       </tr>` : '');
       return html;
-    }).join('') +
-    Object.values(adjs.reduce((m, a) => { (m[a.symbol] ||= []).push(a); return m; }, {})).map(list => {
+    };
+
+  // bucket per-symbol groups into collapsible day/month/year sections
+  const view = document.getElementById('logView').value;
+  const plen = view === 'day' ? 10 : view === 'month' ? 7 : 4;
+  const thead = '<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th class="num">% Gain</th><th></th></tr>';
+  const periods = {};
+  Object.values(bySym).forEach(entries => (periods[entries[0].date.slice(0, plen)] ||= []).push(entries));
+  const sections = Object.keys(periods).sort().reverse().map((p, pi) => {
+    const lists = periods[p].sort((a, b) => b[0].date.localeCompare(a[0].date) || a[0].symbol.localeCompare(b[0].symbol));
+    const closedE = lists.flat().filter(e => !e.open);
+    const pnl = closedE.reduce((s, e) => s + e.pnl, 0);
+    const wins = closedE.filter(e => e.pnl > 0).length;
+    return `<details${pi === 0 ? ' open' : ''}>
+      <summary><span class="period">${p}</span>
+        <span><small>${closedE.length} trades · ${wins}W/${closedE.length - wins}L</small> &nbsp;<b class="${cls(pnl)}">${money(pnl)}</b></span></summary>
+      <table>${thead}${lists.map(symGroupRow).join('')}</table>
+    </details>`;
+  }).join('');
+
+  const adjHtml = adjs.length ? `<details>
+    <summary><span class="period">⚖ Adjustments</span><span><b class="${cls(adjs.reduce((s, a) => s + a.amount, 0))}">${money(adjs.reduce((s, a) => s + a.amount, 0))}</b></span></summary>
+    <table>${Object.values(adjs.reduce((m, a) => { (m[a.symbol] ||= []).push(a); return m; }, {})).map(list => {
       const total = list.reduce((s, a) => s + a.amount, 0), dates = list.map(a => a.date).sort();
       return `<tr>
         <td>${dates[0]}${list.length > 1 ? ` → ${dates[dates.length - 1]}` : ''}</td>
-        <td>⚖ ${list[0].symbol} <small>(${list.length > 1 ? list.length + ' daily adjustments' : 'adjustment'})</small></td>
-        <td class="num">—</td><td class="num">—</td>
-        <td class="num ${cls(total)}">${money(total)}</td><td class="num">—</td>
+        <td>${list[0].symbol} <small>(${list.length > 1 ? list.length + ' daily entries' : 'adjustment'})</small></td>
+        <td class="num ${cls(total)}">${money(total)}</td>
         <td><button class="danger" title="Delete adjustment(s)" onclick="deleteAdj('${list[0].symbol.replace(/'/g, "\\'")}')">✕</button></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="7" style="color:var(--dim)">No trades yet — upload a screenshot above.</td></tr>';
+    }).join('')}</table>
+  </details>` : '';
+
+  document.getElementById('log').innerHTML = (sections + adjHtml) || '<small style="color:var(--dim)">No trades yet — upload a screenshot above.</small>';
 }
 
 function deleteGroup(date, symbol) {
