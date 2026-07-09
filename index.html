@@ -115,22 +115,22 @@
 </div>
 
 <div class="panel">
-  <h2 style="display:flex;justify-content:space-between;align-items:center">
+  <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <span>Trade Log <small id="logCount"></small></span>
-    <select id="logView" onchange="render()">
-      <option value="day">By Day</option>
-      <option value="month">By Month</option>
-      <option value="year">By Year</option>
-    </select>
+    <span style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="editLog()">✎ Edit Fills</button>
+      <button onclick="addAdjustment()">＋ Adjustment</button>
+      <button onclick="exportJSON()">Export JSON</button>
+      <button onclick="document.getElementById('importFile').click()">Import JSON</button>
+      <input type="file" id="importFile" accept=".json" class="hidden">
+      <select id="logView" onchange="render()">
+        <option value="day">By Day</option>
+        <option value="month">By Month</option>
+        <option value="year">By Year</option>
+      </select>
+    </span>
   </h2>
   <div id="log"></div>
-  <div style="margin-top:10px; display:flex; gap:8px">
-    <button onclick="editLog()">✎ Edit Fills</button>
-    <button onclick="addAdjustment()">＋ Adjustment</button>
-    <button onclick="exportJSON()">Export JSON</button>
-    <button onclick="document.getElementById('importFile').click()">Import JSON</button>
-    <input type="file" id="importFile" accept=".json" class="hidden">
-  </div>
 </div>
 
 <script>
