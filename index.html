@@ -103,14 +103,16 @@
   <input type="file" id="file" accept="image/*" class="hidden">
   <div id="status"></div>
   <div id="review" class="hidden">
-    <h2 style="margin-top:14px">Review Extracted Fills</h2>
-    <table id="reviewTable"></table>
-    <div style="margin-top:10px; display:flex; gap:8px">
-      <button class="primary" id="confirmBtn" onclick="confirmFills()">Add to Log</button>
-      <button onclick="addBlankFill()">+ Row</button>
-      <button class="danger" onclick="discardReview()">Discard</button>
-    </div>
+    <h2 style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <span>Review Extracted Fills</span>
+      <span style="display:flex;gap:8px">
+        <button class="primary" id="confirmBtn" onclick="confirmFills()">Add to Log</button>
+        <button onclick="addBlankFill()">+ Row</button>
+        <button class="danger" onclick="discardReview()">Cancel</button>
+      </span>
+    </h2>
     <small>Blank price = market fill screenshot didn't show. Enter actual fill price before adding.</small>
+    <table id="reviewTable"></table>
   </div>
 </div>
 
