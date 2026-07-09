@@ -277,11 +277,16 @@ function addAdjustment() {
   persist();
 }
 
-// cash-settled / expired worthless: book the closing fill at $0.00
-function settleZero(date, symbol, qty, side) {
+// settle an open position after hours: $0 (expired worthless) or ITM cash value per contract
+function settlePos(date, symbol, qty, side) {
+  const v = prompt(`Settlement cash per contract for ${symbol}?\n0 = expired worthless, or e.g. 324 for a $324 ITM settle:`, '0');
+  if (v == null) return;
+  const amt = parseFloat(v);
+  if (isNaN(amt) || amt < 0) return setStatus('Invalid settlement amount.');
   const mult = trades.find(t => t.date === date && t.symbol === symbol)?.mult || 100;
-  trades.push({ date, symbol, side, qty, price: 0, mult, time: '16:00:00' });
+  trades.push({ date, symbol, side, qty, price: amt / mult, mult, time: '16:00:00', settle: true });
   persist();
+  setStatus(`Settled ${qty}× ${symbol} at ${money(amt)} per contract.`);
 }
 
 // ---------- pnl ----------
@@ -300,8 +305,8 @@ function computePnl(list) {
     const longs = [], shorts = []; // unmatched lots {qty, price, mult}
     for (const f of fills) {
       const mult = f.mult || 1;
-      // Webull screenshot prices are gross — RH CSV amounts already net of fees. $0 settles carry no fee.
-      const feeAdj = (!RH_PAT.test(f.symbol) && f.price > 0) ? FEE_PER_CONTRACT / mult : 0;
+      // Webull screenshot prices are gross — RH CSV amounts already net of fees. Settlements carry no fee.
+      const feeAdj = (!RH_PAT.test(f.symbol) && f.price > 0 && !f.settle) ? FEE_PER_CONTRACT / mult : 0;
       const px = f.side === 'buy' ? f.price + feeAdj : f.price - feeAdj;
       const opp = f.side === 'sell' ? longs : shorts;
       let qty = f.qty, oppCash = 0, matched = 0;
@@ -387,7 +392,7 @@ function render() {
         <td style="padding-left:24px"><small>↳ open</small></td><td><small>holding ${open.buyQty || open.sellQty}</small></td>
         <td class="num"><small>${open.buyQty}</small></td><td class="num"><small>${open.sellQty}</small></td>
         <td class="num">—</td><td class="num">—</td>
-        <td><button title="Cash settled / expired worthless — close at $0.00" onclick="settleZero('${g.date}','${g.symbol.replace(/'/g, "\\'")}',${open.buyQty || open.sellQty},'${open.buyQty ? 'sell' : 'buy'}')">$0</button></td>
+        <td><button title="Settle after hours — $0 worthless or ITM cash value" onclick="settlePos('${g.date}','${g.symbol.replace(/'/g, "\\'")}',${open.buyQty || open.sellQty},'${open.buyQty ? 'sell' : 'buy'}')">⚖ Settle</button></td>
       </tr>` : '');
       return html;
     };
