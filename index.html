@@ -527,8 +527,8 @@ function renderInsights(closed) {
   const MIN_N = 3;
   const windows = hourKeys.filter(h => byHour[h].n >= MIN_N && byHour[h].avgPct != null);
   const bestH = windows.length ? windows.reduce((a, b) => byHour[a].avgPct > byHour[b].avgPct ? a : b) : null;
-  // EOD minute-by-minute: last 10 min before close (15:50–16:00 ET)
-  const byMin = bucket(closed.filter(e => e.time && e.time >= '15:50' && e.time < '16:00'), e => e.time.slice(0, 5));
+  // EOD minute-by-minute: last 15 min before close (15:45–16:00 ET)
+  const byMin = bucket(closed.filter(e => e.time && e.time >= '15:45' && e.time < '16:00'), e => e.time.slice(0, 5));
   const minKeys = Object.keys(byMin).sort();
   // the power-hour close: 15:30–16:00 ET
   const inWin = closed.filter(e => e.time && e.time >= '15:30' && e.time < '16:00');
@@ -554,7 +554,7 @@ function renderInsights(closed) {
     <div class="icols">
       <div><h2>P&L by Weekday</h2>${barRows(byDow, dowKeys, k => DOW[k], b => b.pnl, b => `${money(b.pnl)}`)}</div>
       <div><h2>Avg % Gain by 30-Min Window</h2>${hourKeys.length ? barRows(byHour, hourKeys.filter(h => byHour[h].avgPct != null), hLbl, b => b.avgPct, (b, v) => `${v.toFixed(0)}% · ${b.n}t`) : '<small style="color:var(--dim)">Needs fill times — screenshot uploads include them.</small>'}</div>
-      <div><h2>EOD by Minute (15:50–16:00)</h2>${minKeys.length ? barRows(byMin, minKeys, k => k, b => b.avgPct ?? 0, (b, v) => `${b.avgPct != null ? b.avgPct.toFixed(0) + '%' : '—'} · ${b.n}t · ${money(b.pnl)}`) : '<small style="color:var(--dim)">No timed EOD trades yet.</small>'}</div>
+      <div><h2>EOD by Minute (15:45–16:00)</h2>${minKeys.length ? barRows(byMin, minKeys, k => k, b => b.avgPct ?? 0, (b, v) => `${b.avgPct != null ? b.avgPct.toFixed(0) + '%' : '—'} · ${b.n}t · ${money(b.pnl)}`) : '<small style="color:var(--dim)">No timed EOD trades yet.</small>'}</div>
       <div><h2>P&L by Ticker</h2>${barRows(byTicker, topBottom, k => k, b => b.pnl, b => money(b.pnl))}</div>
     </div>`;
 }
