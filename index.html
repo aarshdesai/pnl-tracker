@@ -283,6 +283,8 @@ function settleZero(date, symbol, qty, side) {
 }
 
 // ---------- pnl ----------
+const RH_PAT = /\d+\/\d+\/\d{4} (Call|Put) \$/; // Robinhood-imported symbols (amounts already fee-net)
+const FEE_PER_CONTRACT = 1.05; // Webull SPX per-contract fees
 // FIFO lot matching per (date,symbol): every sell (trim) becomes its own closed entry;
 // leftover lots collapse into one open entry. Order = fill time if present, else insertion order.
 // ponytail: no cross-day position tracking — day trades assumed flat by close
@@ -296,6 +298,9 @@ function computePnl(list) {
     const longs = [], shorts = []; // unmatched lots {qty, price, mult}
     for (const f of fills) {
       const mult = f.mult || 1;
+      // Webull screenshot prices are gross — RH CSV amounts already net of fees. $0 settles carry no fee.
+      const feeAdj = (!RH_PAT.test(f.symbol) && f.price > 0) ? FEE_PER_CONTRACT / mult : 0;
+      const px = f.side === 'buy' ? f.price + feeAdj : f.price - feeAdj;
       const opp = f.side === 'sell' ? longs : shorts;
       let qty = f.qty, oppCash = 0, matched = 0;
       while (qty > 0 && opp.length) {
@@ -305,12 +310,12 @@ function computePnl(list) {
         if (!lot.qty) opp.shift();
       }
       if (matched) {
-        const cash = matched * f.price * mult;
+        const cash = matched * px * mult;
         const pnl = f.side === 'sell' ? cash - oppCash : oppCash - cash;
         const base = f.side === 'sell' ? oppCash : cash; // buy-side cash = cost basis
         out.push({ date, symbol, time: f.time, buyQty: matched, sellQty: matched, pnl, base, pct: base > 0 ? 100 * pnl / base : null, open: false });
       }
-      if (qty > 0) (f.side === 'sell' ? shorts : longs).push({ qty, price: f.price, mult });
+      if (qty > 0) (f.side === 'sell' ? shorts : longs).push({ qty, price: px, mult });
     }
     const openB = longs.reduce((s, l) => s + l.qty, 0), openS = shorts.reduce((s, l) => s + l.qty, 0);
     if (openB || openS) out.push({ date, symbol, buyQty: openB, sellQty: openS, pnl: 0, pct: null, open: true });
@@ -336,13 +341,17 @@ function render() {
   const days = Object.keys(byDay).sort();
   const total = days.reduce((s, d) => s + byDay[d], 0);
   const today = byDay[localDate()] || 0;
-  const wins = closed.filter(g => g.pnl > 0).length;
+  // win rate per position: trims + runners of one (date,symbol) count once, on combined P&L
+  const posPnl = {};
+  for (const g of closed) posPnl[g.date + '|' + g.symbol] = (posPnl[g.date + '|' + g.symbol] || 0) + g.pnl;
+  const positions = Object.values(posPnl);
+  const posWins = positions.filter(p => p > 0).length;
 
   document.getElementById('stats').innerHTML = [
     ['Total P&L', money(total), cls(total)],
     ['Today', money(today), cls(today)],
-    ['Win Rate', closed.length ? Math.round(100 * wins / closed.length) + '%' : '—', ''],
-    ['Closed Trades', closed.length, ''],
+    ['Win Rate', positions.length ? Math.round(100 * posWins / positions.length) + '%' : '—', ''],
+    ['Positions', positions.length, ''],
     ['Trading Days', new Set(groups.map(g => g.date)).size, ''],
   ].map(([l, v, c]) => `<div class="stat"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join('');
 
@@ -637,18 +646,24 @@ document.getElementById('importFile').onchange = async e => {
 
 // self-check: fails loud in console if pnl math breaks
 (() => {
-  // trim scenario: buy 2, sell 1 (trim), sell 1 (runner) → two separate closed entries
+  // RH-format symbol → no fee: trim + runner → two closed entries
   const es = computePnl([
-    { date: 'd', symbol: 'X', side: 'buy', qty: 2, price: 0.40, mult: 100, time: '09:30:00' },
-    { date: 'd', symbol: 'X', side: 'sell', qty: 1, price: 0.80, mult: 100, time: '09:35:00' },
-    { date: 'd', symbol: 'X', side: 'sell', qty: 1, price: 1.20, mult: 100, time: '09:40:00' },
+    { date: 'd', symbol: 'SPXW 1/1/2026 Call $100.00', side: 'buy', qty: 2, price: 0.40, mult: 100, time: '09:30:00' },
+    { date: 'd', symbol: 'SPXW 1/1/2026 Call $100.00', side: 'sell', qty: 1, price: 0.80, mult: 100, time: '09:35:00' },
+    { date: 'd', symbol: 'SPXW 1/1/2026 Call $100.00', side: 'sell', qty: 1, price: 1.20, mult: 100, time: '09:40:00' },
   ]);
   console.assert(es.length === 2 && Math.abs(es[0].pnl - 40) < 1e-9 && Math.abs(es[0].pct - 100) < 1e-9
     && Math.abs(es[1].pnl - 80) < 1e-9 && Math.abs(es[1].pct - 200) < 1e-9, 'PnL trim self-check FAILED', es);
+  // Webull-format symbol → $1.05/contract fee both legs: buy 1@1.00, sell 1@2.00 → 100 - 2.10 = 97.90
+  const fs = computePnl([
+    { date: 'd', symbol: 'SPXW $7,500 06 Jul 26 (W) Put', side: 'buy', qty: 1, price: 1.00, mult: 100 },
+    { date: 'd', symbol: 'SPXW $7,500 06 Jul 26 (W) Put', side: 'sell', qty: 1, price: 2.00, mult: 100 },
+  ]);
+  console.assert(fs.length === 1 && Math.abs(fs[0].pnl - 97.90) < 1e-9, 'PnL fee self-check FAILED', fs);
   // open remainder: buy 2, sell 1 → one closed trim + one open entry
   const os = computePnl([
-    { date: 'd', symbol: 'Y', side: 'buy', qty: 2, price: 1.00, mult: 100 },
-    { date: 'd', symbol: 'Y', side: 'sell', qty: 1, price: 1.50, mult: 100 },
+    { date: 'd', symbol: 'SPXW 1/1/2026 Put $100.00', side: 'buy', qty: 2, price: 1.00, mult: 100 },
+    { date: 'd', symbol: 'SPXW 1/1/2026 Put $100.00', side: 'sell', qty: 1, price: 1.50, mult: 100 },
   ]);
   console.assert(os.length === 2 && Math.abs(os[0].pnl - 50) < 1e-9 && os[1].open && os[1].buyQty === 1, 'PnL open self-check FAILED', os);
 })();
