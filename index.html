@@ -233,11 +233,11 @@ async function extract(file) {
 }
 
 // ---------- review table ----------
-let editMode = false;
+let editMode = false, editFilter = null; // editFilter = {date, symbol} → editing one trade only
 function renderReview() {
   const el = document.getElementById('review');
   el.classList.toggle('hidden', pending.length === 0);
-  document.getElementById('confirmBtn').textContent = editMode ? 'Save Log (replaces everything)' : 'Add to Log';
+  document.getElementById('confirmBtn').textContent = editMode ? (editFilter ? 'Save Trade' : 'Save Log (replaces everything)') : 'Add to Log';
   document.getElementById('reviewTable').innerHTML =
     '<tr><th>Date</th><th>Time</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Mult</th><th></th></tr>' +
     pending.map((f, i) => `<tr>
@@ -254,22 +254,35 @@ function renderReview() {
     </tr>`).join('');
 }
 function addBlankFill() { pending.push({ symbol: '', side: 'buy', qty: 1, price: null, mult: 100 }); renderReview(); }
-function discardReview() { pending = []; editMode = false; renderReview(); setStatus(''); }
+function discardReview() { pending = []; editMode = false; editFilter = null; renderReview(); setStatus(''); }
 function editLog() {
   pending = trades.filter(t => !t.adj).map(t => ({ ...t })); // adjustments managed via their own ✕ button
   if (!pending.length) return setStatus('Log is empty — nothing to edit.');
-  editMode = true;
+  editMode = true; editFilter = null;
   renderReview();
   document.getElementById('review').scrollIntoView({ behavior: 'smooth' });
   setStatus('Editing full log — Save replaces everything.');
+}
+// edit one trade's fills only
+function editTrade(date, symbol) {
+  pending = trades.filter(t => !t.adj && t.date === date && t.symbol === symbol).map(t => ({ ...t }));
+  if (!pending.length) return;
+  editMode = true; editFilter = { date, symbol };
+  renderReview();
+  document.getElementById('review').scrollIntoView({ behavior: 'smooth' });
+  setStatus(`Editing ${symbol} · ${date} — Save replaces only this trade's fills.`);
 }
 function confirmFills() {
   const date = document.getElementById('tradeDate').value;
   const bad = pending.filter(f => !f.symbol || !f.qty || f.price == null || isNaN(f.price));
   if (bad.length) return setStatus(`${bad.length} row(s) missing symbol/qty/price — fix or remove them.`);
   const rows = pending.map(f => ({ ...f, date: f.date || date }));
-  if (editMode) trades = [...trades.filter(t => t.adj), ...rows]; // keep adjustments through full-log edits
-  else trades.push(...rows);
+  if (editMode) {
+    const keep = editFilter
+      ? trades.filter(t => t.adj || t.date !== editFilter.date || t.symbol !== editFilter.symbol) // swap one trade
+      : trades.filter(t => t.adj); // full-log edit keeps adjustments
+    trades = [...keep, ...rows];
+  } else trades.push(...rows);
   persist();
   discardReview();
   setStatus('Saved. Dashboard updated.');
@@ -401,7 +414,8 @@ function render() {
         <td class="num buy">${buys}</td><td class="num sell">${sells}</td>
         <td class="num ${closed.length ? cls(pnl) : ''}">${closed.length ? money(pnl) : '—'}</td>
         ${pctCell(base > 0 ? 100 * pnl / base : null)}
-        <td><button class="danger" title="Delete all fills for this trade" onclick="deleteGroup('${g.date}','${g.symbol.replace(/'/g, "\\'")}')">✕</button></td>
+        <td style="white-space:nowrap"><button title="Edit this trade's fills" onclick="editTrade('${g.date}','${g.symbol.replace(/'/g, "\\'")}')">✎</button>
+        <button class="danger" title="Delete all fills for this trade" onclick="deleteGroup('${g.date}','${g.symbol.replace(/'/g, "\\'")}')">✕</button></td>
       </tr>`;
       if (entries.length > 1 || open) html += closed.map(e => `<tr style="color:var(--dim)">
         <td style="padding-left:24px"><small>↳ ${e.time || 'trim'}</small></td><td><small>sold ${e.sellQty}</small></td>
