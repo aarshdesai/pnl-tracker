@@ -420,8 +420,15 @@ function render() {
   const view = document.getElementById('logView').value;
   const plen = view === 'day' ? 10 : view === 'month' ? 7 : 4;
   const thead = '<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th class="num">% Gain</th><th></th></tr>';
+  // groups holding an open position get pinned to a section at the very top
+  const openGroups = [], closedGroups = [];
+  for (const entries of Object.values(bySym)) (entries.some(e => e.open) ? openGroups : closedGroups).push(entries);
+  const openHtml = openGroups.length ? `<details open>
+    <summary><span class="period">⏳ Open Positions</span><span><small>${openGroups.length} awaiting close/settle</small></span></summary>
+    <table>${'<tr><th>Date</th><th>Symbol</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">P&L</th><th class="num">% Gain</th><th></th></tr>'}${openGroups.sort((a, b) => b[0].date.localeCompare(a[0].date)).map(g => symGroupRow(g)).join('')}</table>
+  </details>` : '';
   const periods = {};
-  Object.values(bySym).forEach(entries => (periods[entries[0].date.slice(0, plen)] ||= []).push(entries));
+  closedGroups.forEach(entries => (periods[entries[0].date.slice(0, plen)] ||= []).push(entries));
   const sections = Object.keys(periods).sort().reverse().map((p, pi) => {
     const lists = periods[p].sort((a, b) => b[0].date.localeCompare(a[0].date) || a[0].symbol.localeCompare(b[0].symbol));
     const closedE = lists.flat().filter(e => !e.open);
@@ -447,7 +454,7 @@ function render() {
     }).join('')}</table>
   </details>` : '';
 
-  document.getElementById('log').innerHTML = (sections + adjHtml) || '<small style="color:var(--dim)">No trades yet — upload a screenshot above.</small>';
+  document.getElementById('log').innerHTML = (openHtml + sections + adjHtml) || '<small style="color:var(--dim)">No trades yet — upload a screenshot above.</small>';
 }
 
 function deleteGroup(date, symbol) {
